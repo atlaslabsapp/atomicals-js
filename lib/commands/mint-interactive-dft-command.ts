@@ -39,9 +39,9 @@ export class MintInteractiveDftCommand implements CommandInterface {
         mint_ticker: this.ticker,
       }, undefined, undefined)
 
-    logBanner('Mint Interactive FT (Decentralized)');
-    console.log("Atomical type:", 'FUNGIBLE (decentralized)', filesData, this.ticker);
-    console.log("Mint for ticker: ", this.ticker);
+    // logBanner('Mint Interactive FT (Decentralized)');
+    // console.log("Atomical type:", 'FUNGIBLE (decentralized)', filesData, this.ticker);
+    // console.log("Mint for ticker: ", this.ticker);
 
     const atomicalIdResult = await this.electrumApi.atomicalsGetByTicker(this.ticker);
     const atomicalResponse = await this.electrumApi.atomicalsGetFtInfo(atomicalIdResult.result.atomical_id);
@@ -49,7 +49,7 @@ export class MintInteractiveDftCommand implements CommandInterface {
     const atomicalInfo = atomicalResponse.result;
     const atomicalDecorated = decorateAtomical(atomicalInfo);
 
-    console.log(globalInfo, atomicalDecorated);
+    // console.log(globalInfo, atomicalDecorated);
 
     if (!atomicalDecorated['$ticker'] || atomicalDecorated['$ticker'] != this.ticker) {
       throw new Error('Ticker being requested does not match the initialized decentralized FT mint: ' + atomicalDecorated)
@@ -66,7 +66,7 @@ export class MintInteractiveDftCommand implements CommandInterface {
     if (perAmountMint <= 0 || perAmountMint >= 100000000) {
       throw new Error('Per amount mint must be > 0 and less than or equal to 100,000,000')
     }
-    console.log("Per mint amount:", perAmountMint);
+    // console.log("Per mint amount:", perAmountMint);
 
     if (!atomicalDecorated['dft_info']) {
       throw new Error(`General error no dft_info found`)
@@ -75,13 +75,13 @@ export class MintInteractiveDftCommand implements CommandInterface {
     const max_mints = atomicalDecorated['$max_mints']
     const mint_count = atomicalDecorated['dft_info']['mint_count'];
     const ticker = atomicalDecorated['$ticker'];
-    if (atomicalDecorated['dft_info']['mint_count'] >= atomicalDecorated['$max_mints']) {
-      throw new Error(`Decentralized mint for ${ticker} completely minted out!`)
-    } else {
-      console.log(`There are already ${mint_count} mints of ${ticker} out of a max total of ${max_mints}.`)
-    }
+    // if (atomicalDecorated['dft_info']['mint_count'] >= atomicalDecorated['$max_mints']) {
+    //   throw new Error(`Decentralized mint for ${ticker} completely minted out!`)
+    // } else {
+    //   console.log(`There are already ${mint_count} mints of ${ticker} out of a max total of ${max_mints}.`)
+    // }
  
-    console.log('atomicalDecorated', atomicalResponse, atomicalDecorated);
+    // console.log('atomicalDecorated', atomicalResponse, atomicalDecorated);
     const atomicalBuilder = new AtomicalOperationBuilder({
       electrumApi: this.electrumApi,
       rbf: this.options.rbf,

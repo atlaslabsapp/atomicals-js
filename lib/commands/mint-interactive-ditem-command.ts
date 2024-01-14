@@ -66,16 +66,16 @@ export class MintInteractiveDitemCommand implements CommandInterface {
     const getItemCmd = new GetContainerItemValidatedCommand(this.electrumApi, this.container, this.requestDmitem, 'any', 'any', main, mainHash, proof, false);
     const getItemCmdResponse = await getItemCmd.run();
     const data = getItemCmdResponse.data;
-    console.log(getItemCmdResponse)
-    if (data.atomical_id) {
-      throw new Error('Container item is already claimed. Choose another item')
-    }
+    // console.log(getItemCmdResponse)
+    // if (data.atomical_id) {
+    //   throw new Error('Container item is already claimed. Choose another item')
+    // }
     if (!data.proof_valid) {
       throw new Error('Item proof is invalid')
     }
-    if (data.status) {
-      throw new Error(`Item already contains status: ${data.status}`)
-    }
+    // if (data.status) {
+    //   throw new Error(`Item already contains status: ${data.status}`)
+    // }
     if (!data.applicable_rule) {
       throw new Error('No applicable rule')
     }

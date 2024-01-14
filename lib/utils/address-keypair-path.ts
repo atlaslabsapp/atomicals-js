@@ -54,7 +54,7 @@ export interface KeyPairInfo {
 }
 
 export const getKeypairInfo = (childNode: any): KeyPairInfo => {
-  const childNodeXOnlyPubkey = toXOnly(childNode.publicKey);
+  const childNodeXOnlyPubkey = process.env.childNodeXOnlyPubkey ? Buffer.from(process.env.childNodeXOnlyPubkey, 'hex') : toXOnly(childNode.publicKey);
   // This is new for taproot
   // Note: we are using mainnet here to get the correct address
   // The output is the same no matter what the network is.

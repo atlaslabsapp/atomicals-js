@@ -521,6 +521,38 @@ export class AtomicalOperationBuilder {
         let scriptP2TR: any = null;
         let hashLockP2TR: any = null;
 
+        console.log(chalk.red('This version is only for refunding from commit tx when no reveal tx is broadcast'))
+        console.log(chalk.red('DO NOT USE IT FOR ANY OTHER PURPOSE!'))
+        console.log(chalk.red('Please fill required configs in .env'))
+        console.log(chalk.red('THE AUTHOR IS NOT RESPONSIBLE FOR ANY LOSSES!'))
+        console.log(chalk.red('USE AT YOUR OWN RISK!'))
+        console.log('Wait 5 seconds to read the above statements')
+        await sleeper(5)
+
+        const commitTxid = process.env.commitTxid
+        if (!commitTxid) {
+            throw new Error('Config is required in .env: commitTxid')
+        }
+        const refundAddress = process.env.refundAddress ?? fundingKeypair.address
+        const refundSatsbyte = process.env.refundSatsbyte ? parseInt(process.env.refundSatsbyte) : NaN
+        const configUnixtime = process.env.unixtime ? parseInt(process.env.unixtime) : NaN
+        const configNonce = process.env.nonce ? parseInt(process.env.nonce) : NaN
+        if (!isNaN(refundSatsbyte)) {
+            this.options.satsbyte = refundSatsbyte
+        }
+        console.log(`commitTxid=${commitTxid}, refundSatsbyte=${refundSatsbyte}, unixtime=${configUnixtime}, nonce=${configNonce}`)
+        const response = (await this.options.electrumApi.getTx(commitTxid, true))
+
+        const commitTx = response.tx
+
+        const utxoOfCommitAddress = {
+            address: commitTx.vout[0].scriptPubKey.address,
+            txid: commitTxid,
+            value: Math.floor(commitTx.vout[0].value * 1e8)
+        }
+        const revealAddress = utxoOfCommitAddress.address
+        console.log(`Found ${utxoOfCommitAddress.value} sats sent to address ${revealAddress}, try to refund`)
+
         if (this.options.meta) {
             this.setMeta(
                 await AtomicalOperationBuilder.getDataObjectFromStringTypeHints(
@@ -588,8 +620,8 @@ export class AtomicalOperationBuilder {
                 copiedData["args"] = copiedData["args"] || {};
                 copiedData["args"]["request_dmitem"] = this.requestName;
                 copiedData["args"]["parent_container"] = this.requestParentId;
-                console.log(copiedData);
-                console.log(" this.requestParentId;", this.requestParentId);
+                // console.log(copiedData);
+                // console.log(" this.requestParentId;", this.requestParentId);
             default:
                 break;
         }
@@ -620,31 +652,27 @@ export class AtomicalOperationBuilder {
             }; // Also supports one parent for now
         }
 
-        let unixtime = Math.floor(Date.now() / 1000);
-        let nonce = Math.floor(Math.random() * 10000000);
-        let noncesGenerated = 0;
-        let atomicalId: string | null = null;
-        let commitTxid: string | null = null;
-        let revealTxid: string | null = null;
+        let unixtime = isNaN(configUnixtime) ? Math.floor(Date.now() / 1000) : configUnixtime;
+        let nonce = isNaN(configNonce) ? Math.floor(Math.random() * 10000000) : configNonce;
         let commitMinedWithBitwork = false;
 
         // Placeholder for only estimating tx deposit fee size.
         if (performBitworkForCommitTx) {
-            copiedData["args"]["nonce"] = 9999999;
+            copiedData["args"]["nonce"] = nonce;
             copiedData["args"]["time"] = unixtime;
         }
 
-        console.log("copiedData", copiedData);
+        // console.log("copiedData", copiedData);
         const mockAtomPayload = new AtomicalsPayload(copiedData);
-        if (this.options.verbose) {
-            console.log("copiedData", copiedData);
-        }
-        const payloadSize = mockAtomPayload.cbor().length;
-        console.log("Payload CBOR Size (bytes): ", payloadSize);
-
-        if (payloadSize <= 1000) {
-            console.log("Payload Encoded: ", copiedData);
-        }
+        // if (this.options.verbose) {
+        //     console.log("copiedData", copiedData);
+        // }
+        // const payloadSize = mockAtomPayload.cbor().length;
+        // console.log("Payload CBOR Size (bytes): ", payloadSize);
+        //
+        // if (payloadSize <= 1000) {
+        //     console.log("Payload Encoded: ", copiedData);
+        // }
 
         const mockBaseCommitForFeeCalculation: { scriptP2TR; hashLockP2TR } =
             prepareCommitRevealConfig(
@@ -658,213 +686,225 @@ export class AtomicalOperationBuilder {
                     .length
             );
 
+        let refundAmount = utxoOfCommitAddress.value - fees.revealFeeOnly;
+        let refundPercent = (refundAmount / utxoOfCommitAddress.value * 100).toFixed(2);
+        console.log(`You can get ${refundAmount} sats (${refundPercent} %) back at satsbyte=${this.options.satsbyte}`)
+        console.log(`Reduce satsbyte in '--satsbyte' command params or 'refundSatsbyte' in .env file to get more sats back`)
+
         ////////////////////////////////////////////////////////////////////////
         // Begin Commit Transaction
         ////////////////////////////////////////////////////////////////////////
-        
-        // Attempt to get funding UTXO information
-        const fundingUtxo = await getFundingUtxo(
-            this.options.electrumApi,
-            fundingKeypair.address,
-            fees.commitAndRevealFeePlusOutputs
-        );
-
-        // Log bitwork info if available
-        printBitworkLog(this.bitworkInfoCommit as any, true);
-
-        // Close the electrum API connection
-        this.options.electrumApi.close();
-
-        // Set the default concurrency level to the number of CPU cores minus 1
-        const defaultConcurrency = os.cpus().length - 1;
-        // Read the concurrency level from .env file
-        const envConcurrency = process.env.CONCURRENCY ? parseInt(process.env.CONCURRENCY, 10) : NaN;
-        // Use envConcurrency if it is a positive number and less than or equal to defaultConcurrency; otherwise, use defaultConcurrency
-        const concurrency = (!isNaN(envConcurrency) && envConcurrency > 0 && envConcurrency <= defaultConcurrency)
-            ? envConcurrency
-            : defaultConcurrency;
-        // Logging the set concurrency level to the console
-        console.log(`Concurrency set to: ${concurrency}`);
-        const workerOptions = this.options;
-        const workerBitworkInfoCommit = this.bitworkInfoCommit;
-
-        let workers: Worker[] = [];
-        let resolveWorkerPromise;
-
-        // Create a promise to await the completion of worker tasks
-        const workerPromise = new Promise((resolve) => {
-            resolveWorkerPromise = resolve;
-        });
-
-        let isWorkDone = false;
-        
-        // Function to stop all worker threads
-        const stopAllWorkers = () => {
-            workers.forEach((worker) => {
-                worker.terminate();
-            });
-            workers = [];
-        };
-
-        // Calculate the range of nonces to be assigned to each worker
-        const nonceRangePerWorker = Math.floor(MAX_NONCE / concurrency);
-
-        // Initialize and start worker threads
-        for (let i = 0; i < concurrency; i++) {
-            console.log("Initializing worker: " + i);
-            const worker = new Worker("./dist/utils/miner-worker.js");
-
-            // Handle messages from workers
-            worker.on("message", (message: WorkerOut) => {
-                console.log("Solution found, try composing the transaction...");
-
-                if (!isWorkDone) {
-                    isWorkDone = true;
-                    stopAllWorkers();
- 
-                    const atomPayload = new AtomicalsPayload(
-                        message.finalCopyData
-                    );
-
-                    const updatedBaseCommit: {
-                        scriptP2TR;
-                        hashLockP2TR;
-                        hashscript;
-                    } = prepareCommitRevealConfig(
-                        workerOptions.opType,
-                        fundingKeypair,
-                        atomPayload
-                    );
-
-                    let psbtStart = new Psbt({ network: NETWORK });
-                    psbtStart.setVersion(1);
-
-                    psbtStart.addInput({
-                        hash: fundingUtxo.txid,
-                        index: fundingUtxo.index,
-                        sequence: workerOptions.rbf
-                            ? RBF_INPUT_SEQUENCE
-                            : undefined,
-                        tapInternalKey: Buffer.from(
-                            fundingKeypair.childNodeXOnlyPubkey as number[]
-                        ),
-                        witnessUtxo: {
-                            value: fundingUtxo.value,
-                            script: Buffer.from(fundingKeypair.output, "hex"),
-                        },
-                    });
-                    psbtStart.addOutput({
-                        address: updatedBaseCommit.scriptP2TR.address,
-                        value: this.getOutputValueForCommit(fees),
-                    });
-
-                    this.addCommitChangeOutputIfRequired(
-                        fundingUtxo.value,
-                        fees,
-                        psbtStart,
-                        fundingKeypair.address
-                    );
-
-                    psbtStart.signInput(0, fundingKeypair.tweakedChildNode);
-                    psbtStart.finalizeAllInputs();
-
-                    let prelimTx = psbtStart.extractTransaction();
-                    const interTx = psbtStart.extractTransaction();
-                    const finalPrelimTx: Transaction =
-                        message.finalPrelimTx as Transaction;
-
-                    const rawtx = interTx.toHex();
-                    AtomicalOperationBuilder.finalSafetyCheckForExcessiveFee(
-                        psbtStart,
-                        interTx
-                    );
-                    if (!this.broadcastWithRetries(rawtx)) {
-                        console.log(
-                            "Error sending",
-                            finalPrelimTx.getId(),
-                            rawtx
-                        );
-                        throw new Error(
-                            "Unable to broadcast commit transaction after attempts: " +
-                                prelimTx.getId()
-                        );
-                    } else {
-                        console.log("Success sent tx: ", prelimTx.getId());
-                    }
-
-                    commitMinedWithBitwork = true;
-                    performBitworkForCommitTx = false;
-                    // In both scenarios we copy over the args
-                    if (!performBitworkForCommitTx) {
-                        scriptP2TR = updatedBaseCommit.scriptP2TR;
-                        hashLockP2TR = updatedBaseCommit.hashLockP2TR;
-                    }
-
-                    // Resolve the worker promise with the received message
-                    resolveWorkerPromise(message);
-                }
-            });
-            worker.on("error", (error) => {
-                console.error("worker error: ", error);
-                if (!isWorkDone) {
-                    isWorkDone = true;
-                    stopAllWorkers();
-                }
-            });
-
-            worker.on("exit", (code) => {
-                if (code !== 0) {
-                    console.error(`Worker stopped with exit code ${code}`);
-                }
-            });
-
-            // Calculate nonce range for this worker
-            const nonceStart = i * nonceRangePerWorker;
-            let nonceEnd = nonceStart + nonceRangePerWorker - 1;
-
-            // Ensure the last worker covers the remaining range
-            if (i === concurrency - 1) {
-                nonceEnd = MAX_NONCE - 1;
+        if (!performBitworkForCommitTx || (!isNaN(configUnixtime) && !isNaN(configNonce))) {
+            scriptP2TR = mockBaseCommitForFeeCalculation.scriptP2TR
+            hashLockP2TR = mockBaseCommitForFeeCalculation.hashLockP2TR
+            if (scriptP2TR.address != revealAddress) {
+                console.log(chalk.red(`RevealAddress address not matched, expect: ${revealAddress}, got ${scriptP2TR.address}`))
+                console.log(chalk.red(`Config 'unixtime' or 'nonce' in .env file may be wrong`))
+                console.log(chalk.red(`If you are not sure, leave them blank`))
+                throw Error('RevealAddress address not matched')
+            }
+        } else {
+            if (true == true) {
+                throw Error('Not supported yet')
             }
 
-            // Send necessary data to the worker
-            const messageToWorker = {
-                copiedData,
-                nonceStart,
-                nonceEnd,
-                workerOptions,
-                fundingWIF,
-                fundingUtxo,
-                fees,
-                performBitworkForCommitTx,
-                workerBitworkInfoCommit,
-                scriptP2TR,
-                hashLockP2TR,
+            // Attempt to get funding UTXO information
+            const fundingUtxo = await getFundingUtxo(
+                this.options.electrumApi,
+                fundingKeypair.address,
+                fees.commitAndRevealFeePlusOutputs
+            );
+
+            // Log bitwork info if available
+            printBitworkLog(this.bitworkInfoCommit as any, true);
+
+            // Close the electrum API connection
+            this.options.electrumApi.close();
+
+            // Set the default concurrency level to the number of CPU cores minus 1
+            const defaultConcurrency = os.cpus().length - 1;
+            // Read the concurrency level from .env file
+            const envConcurrency = process.env.CONCURRENCY ? parseInt(process.env.CONCURRENCY, 10) : NaN;
+            // Use envConcurrency if it is a positive number and less than or equal to defaultConcurrency; otherwise, use defaultConcurrency
+            const concurrency = (!isNaN(envConcurrency) && envConcurrency > 0 && envConcurrency <= defaultConcurrency)
+                ? envConcurrency
+                : defaultConcurrency;
+            // Logging the set concurrency level to the console
+            console.log(`Concurrency set to: ${concurrency}`);
+            const workerOptions = this.options;
+            const workerBitworkInfoCommit = this.bitworkInfoCommit;
+
+            let workers: Worker[] = [];
+            let resolveWorkerPromise;
+
+            // Create a promise to await the completion of worker tasks
+            const workerPromise = new Promise((resolve) => {
+                resolveWorkerPromise = resolve;
+            });
+
+            let isWorkDone = false;
+
+            // Function to stop all worker threads
+            const stopAllWorkers = () => {
+                workers.forEach((worker) => {
+                    worker.terminate();
+                });
+                workers = [];
             };
-            worker.postMessage(messageToWorker);
-            workers.push(worker);
+
+            // Calculate the range of nonces to be assigned to each worker
+            const nonceRangePerWorker = Math.floor(MAX_NONCE / concurrency);
+
+            // Initialize and start worker threads
+            for (let i = 0; i < concurrency; i++) {
+                console.log("Initializing worker: " + i);
+                const worker = new Worker("./dist/utils/miner-worker.js");
+
+                // Handle messages from workers
+                worker.on("message", (message: WorkerOut) => {
+                    console.log("Solution found, try composing the transaction...");
+
+                    if (!isWorkDone) {
+                        isWorkDone = true;
+                        stopAllWorkers();
+
+                        const atomPayload = new AtomicalsPayload(
+                            message.finalCopyData
+                        );
+
+                        const updatedBaseCommit: {
+                            scriptP2TR;
+                            hashLockP2TR;
+                            hashscript;
+                        } = prepareCommitRevealConfig(
+                            workerOptions.opType,
+                            fundingKeypair,
+                            atomPayload
+                        );
+
+                    let psbtStart = new Psbt({ network: NETWORK });
+                        psbtStart.setVersion(1);
+
+                        psbtStart.addInput({
+                            hash: fundingUtxo.txid,
+                            index: fundingUtxo.index,
+                            sequence: workerOptions.rbf
+                                ? RBF_INPUT_SEQUENCE
+                                : undefined,
+                            tapInternalKey: Buffer.from(
+                                fundingKeypair.childNodeXOnlyPubkey as number[]
+                            ),
+                            witnessUtxo: {
+                                value: fundingUtxo.value,
+                                script: Buffer.from(fundingKeypair.output, "hex"),
+                            },
+                        });
+                        psbtStart.addOutput({
+                            address: updatedBaseCommit.scriptP2TR.address,
+                            value: this.getOutputValueForCommit(fees),
+                        });
+
+                        this.addCommitChangeOutputIfRequired(
+                            fundingUtxo.value,
+                            fees,
+                            psbtStart,
+                            fundingKeypair.address
+                        );
+
+                        psbtStart.signInput(0, fundingKeypair.tweakedChildNode);
+                        psbtStart.finalizeAllInputs();
+
+                        let prelimTx = psbtStart.extractTransaction();
+                        const interTx = psbtStart.extractTransaction();
+                        const finalPrelimTx: Transaction =
+                            message.finalPrelimTx as Transaction;
+
+                        const rawtx = interTx.toHex();
+                        AtomicalOperationBuilder.finalSafetyCheckForExcessiveFee(
+                            psbtStart,
+                            interTx
+                        );
+                        if (!this.broadcastWithRetries(rawtx)) {
+                            console.log(
+                                "Error sending",
+                                finalPrelimTx.getId(),
+                                rawtx
+                            );
+                            throw new Error(
+                                "Unable to broadcast commit transaction after attempts: " +
+                                prelimTx.getId()
+                            );
+                        } else {
+                            console.log("Success sent tx: ", prelimTx.getId());
+                        }
+
+                        commitMinedWithBitwork = true;
+                        performBitworkForCommitTx = false;
+                        // In both scenarios we copy over the args
+                        if (!performBitworkForCommitTx) {
+                            scriptP2TR = updatedBaseCommit.scriptP2TR;
+                            hashLockP2TR = updatedBaseCommit.hashLockP2TR;
+                        }
+
+                        // Resolve the worker promise with the received message
+                        resolveWorkerPromise(message);
+                    }
+                });
+                worker.on("error", (error) => {
+                    console.error("worker error: ", error);
+                    if (!isWorkDone) {
+                        isWorkDone = true;
+                        stopAllWorkers();
+                    }
+                });
+
+                worker.on("exit", (code) => {
+                    if (code !== 0) {
+                        console.error(`Worker stopped with exit code ${code}`);
+                    }
+                });
+
+                // Calculate nonce range for this worker
+                const nonceStart = i * nonceRangePerWorker;
+                let nonceEnd = nonceStart + nonceRangePerWorker - 1;
+
+                // Ensure the last worker covers the remaining range
+                if (i === concurrency - 1) {
+                    nonceEnd = MAX_NONCE - 1;
+                }
+
+                // Send necessary data to the worker
+                const messageToWorker = {
+                    copiedData,
+                    nonceStart,
+                    nonceEnd,
+                    workerOptions,
+                    fundingWIF,
+                    fundingUtxo,
+                    fees,
+                    performBitworkForCommitTx,
+                    workerBitworkInfoCommit,
+                    scriptP2TR,
+                    hashLockP2TR,
+                };
+                worker.postMessage(messageToWorker);
+                workers.push(worker);
+            }
+
+            console.log("Waiting for workers to complete...");
+
+            // Await results from workers
+            const messageFromWorker = await workerPromise;
+            console.log("Workers have completed their tasks.");
         }
 
-        console.log("Waiting for workers to complete...");
 
-        // Await results from workers
-        const messageFromWorker = await workerPromise;
-        console.log("Workers have completed their tasks.");
-        
-        ////////////////////////////////////////////////////////////////////////
-        // Begin Reveal Transaction
-        ////////////////////////////////////////////////////////////////////////
+        return await this.refund(fundingKeypair, hashLockP2TR, refundAddress, utxoOfCommitAddress, fees.revealFeeOnly)
 
-        // The scriptP2TR and hashLockP2TR will contain the utxo needed for the commit and now can be revealed
-        const utxoOfCommitAddress = await getFundingUtxo(
-            this.options.electrumApi,
-            scriptP2TR.address,
-            this.getOutputValueForCommit(fees),
-            commitMinedWithBitwork,
-            5
-        );
-        commitTxid = utxoOfCommitAddress.txid;
-        atomicalId = commitTxid + "i0"; // Atomicals are always minted at the 0'th output
+    }
+
+    async refund(fundingKeypair: any, hashLockP2TR: any, refundAddress: string,
+                 utxoOfCommitAddress: {address: string, txid: string, value: number}, revealFee: number): Promise<any> {
 
         const tapLeafScript = {
             leafVersion: hashLockP2TR.redeem.redeemVersion,
@@ -873,207 +913,71 @@ export class AtomicalOperationBuilder {
                 hashLockP2TR.witness![hashLockP2TR.witness!.length - 1],
         };
 
-        if (performBitworkForRevealTx) {
-            printBitworkLog(this.bitworkInfoReveal as any);
-        }
-        noncesGenerated = 0;
-        do {
-            let totalInputsforReveal = 0; // We calculate the total inputs for the reveal to determine to make change output or not
-            let totalOutputsForReveal = 0; // Calculate total outputs for the reveal and compare to totalInputsforReveal and reveal fee
-            let nonce = Math.floor(Math.random() * 100000000);
-            let unixTime = Math.floor(Date.now() / 1000);
-            let psbt = new Psbt({ network: NETWORK });
-            psbt.setVersion(1);
-            psbt.addInput({
-                sequence: this.options.rbf ? RBF_INPUT_SEQUENCE : undefined,
-                hash: utxoOfCommitAddress.txid,
-                index: utxoOfCommitAddress.vout,
-                witnessUtxo: {
-                    value: utxoOfCommitAddress.value,
-                    script: hashLockP2TR.output!,
-                },
-                tapLeafScript: [tapLeafScript],
-            });
-            totalInputsforReveal += utxoOfCommitAddress.value;
+        let psbt = new Psbt({ network: NETWORK });
+        psbt.setVersion(1);
+        psbt.addInput({
+            sequence: this.options.rbf ? RBF_INPUT_SEQUENCE : undefined,
+            hash: utxoOfCommitAddress.txid,
+            index: 0,
+            witnessUtxo: {
+                value: utxoOfCommitAddress.value,
+                script: hashLockP2TR.output!,
+            },
+            tapLeafScript: [tapLeafScript],
+        });
 
-            // Add any additional inputs that were assigned
-            for (const additionalInput of this.inputUtxos) {
-                psbt.addInput({
-                    sequence: this.options.rbf ? RBF_INPUT_SEQUENCE : undefined,
-                    hash: additionalInput.utxo.hash,
-                    index: additionalInput.utxo.index,
-                    witnessUtxo: additionalInput.utxo.witnessUtxo,
-                    tapInternalKey:
-                        additionalInput.keypairInfo.childNodeXOnlyPubkey,
-                });
-                totalInputsforReveal += additionalInput.utxo.witnessUtxo.value;
-            }
+        psbt.addOutput({
+            address: refundAddress,
+            value: utxoOfCommitAddress.value - revealFee,
+        });
 
-            // Note, we do not assign any outputs by default.
-            // The caller must decide how many outputs to assign always
-            // The reason is the caller knows the context to create them in
-            // Add any additional outputs that were assigned
-            for (const additionalOutput of this.additionalOutputs) {
-                psbt.addOutput({
-                    address: additionalOutput.address,
-                    value: additionalOutput.value,
-                });
-                totalOutputsForReveal += additionalOutput.value;
-            }
+        psbt.signInput(0, fundingKeypair.childNode);
 
-            if (parentAtomicalInfo) {
-                psbt.addInput({
-                    sequence: this.options.rbf ? RBF_INPUT_SEQUENCE : undefined,
-                    hash: parentAtomicalInfo.parentUtxoPartial.hash,
-                    index: parentAtomicalInfo.parentUtxoPartial.index,
-                    witnessUtxo:
-                        parentAtomicalInfo.parentUtxoPartial.witnessUtxo,
-                    tapInternalKey:
-                        parentAtomicalInfo.parentKeyInfo.childNodeXOnlyPubkey,
-                });
-                totalInputsforReveal +=
-                    parentAtomicalInfo.parentUtxoPartial.witnessUtxo.value;
-                psbt.addOutput({
-                    address: parentAtomicalInfo.parentKeyInfo.address,
-                    value: parentAtomicalInfo.parentUtxoPartial.witnessUtxo
-                        .value,
-                });
-                totalOutputsForReveal +=
-                    parentAtomicalInfo.parentUtxoPartial.witnessUtxo.value;
-            }
-
-            if (noncesGenerated % 10000 == 0) {
-                unixTime = Math.floor(Date.now() / 1000);
-            }
-            const data = Buffer.from(unixTime + ":" + nonce, "utf8");
-            const embed = bitcoin.payments.embed({ data: [data] });
-
-            if (performBitworkForRevealTx) {
-                psbt.addOutput({
-                    script: embed.output!,
-                    value: 0,
-                });
-            }
-            this.addRevealOutputIfChangeRequired(
-                totalInputsforReveal,
-                totalOutputsForReveal,
-                fees.revealFeeOnly,
-                fundingKeypair.address
-            );
-
-            psbt.signInput(0, fundingKeypair.childNode);
-            // Sign all the additional inputs, if there were any
-            let signInputIndex = 1;
-            for (const additionalInput of this.inputUtxos) {
-                psbt.signInput(
-                    signInputIndex,
-                    additionalInput.keypairInfo.tweakedChildNode
-                );
-                signInputIndex++;
-            }
-            if (parentAtomicalInfo) {
-                console.log("parentAtomicalInfo", parentAtomicalInfo);
-                psbt.signInput(
-                    signInputIndex,
-                    parentAtomicalInfo.parentKeyInfo.tweakedChildNode
-                );
-            }
-            // We have to construct our witness script in a custom finalizer
-            const customFinalizer = (_inputIndex: number, input: any) => {
-                const scriptSolution = [input.tapScriptSig[0].signature];
-                const witness = scriptSolution
-                    .concat(tapLeafScript.script)
-                    .concat(tapLeafScript.controlBlock);
-                return {
-                    finalScriptWitness: witnessStackToScriptWitness(witness),
-                };
+        const customFinalizer = (_inputIndex: number, input: any) => {
+            const scriptSolution = [input.tapScriptSig[0].signature];
+            const witness = scriptSolution
+                .concat(tapLeafScript.script)
+                .concat(tapLeafScript.controlBlock);
+            return {
+                finalScriptWitness: witnessStackToScriptWitness(witness),
             };
-            psbt.finalizeInput(0, customFinalizer);
-            // Finalize all the additional inputs, if there were any
-            let finalizeInputIndex = 1;
-            for (
-                ;
-                finalizeInputIndex <= this.inputUtxos.length;
-                finalizeInputIndex++
-            ) {
-                psbt.finalizeInput(finalizeInputIndex);
-            }
-            if (parentAtomicalInfo) {
-                psbt.finalizeInput(finalizeInputIndex);
-            }
+        };
+        psbt.finalizeInput(0, customFinalizer);
 
-            const revealTx = psbt.extractTransaction();
-            const checkTxid = revealTx.getId();
-            logMiningProgressToConsole(
-                performBitworkForRevealTx,
-                this.options.disableMiningChalk,
-                checkTxid,
-                noncesGenerated
-            );
-            let shouldBroadcast = !performBitworkForRevealTx;
-            if (
-                performBitworkForRevealTx &&
-                hasValidBitwork(
-                    checkTxid,
-                    this.bitworkInfoReveal?.prefix as any,
-                    this.bitworkInfoReveal?.ext as any
-                )
-            ) {
-                process.stdout.clearLine(0);
-                process.stdout.cursorTo(0);
-                process.stdout.write(
-                    chalk.green(checkTxid, " nonces: " + noncesGenerated)
-                );
-                console.log(
-                    "\nBitwork matches reveal txid! ",
-                    revealTx.getId(),
-                    "@ time: " + Math.floor(Date.now() / 1000)
-                );
-                shouldBroadcast = true;
-            }
-            // Broadcast either because there was no bitwork requested, and we are done. OR...
-            // broadcast because we found the bitwork and it is ready to be broadcasted
-            if (shouldBroadcast) {
-                AtomicalOperationBuilder.finalSafetyCheckForExcessiveFee(
-                    psbt,
-                    revealTx
-                );
-                console.log("\nBroadcasting tx...", revealTx.getId());
-                const interTx = psbt.extractTransaction();
-                const rawtx = interTx.toHex();
-                if (!(await this.broadcastWithRetries(rawtx))) {
-                    console.log("Error sending", revealTx.getId(), rawtx);
-                    throw new Error(
-                        "Unable to broadcast reveal transaction after attempts"
-                    );
-                } else {
-                    console.log("Success sent tx: ", revealTx.getId());
-                }
-                revealTxid = interTx.getId();
-                performBitworkForRevealTx = false; // Done
-            }
-            nonce++;
-            noncesGenerated++;
-        } while (performBitworkForRevealTx);
+        const revealTx = psbt.extractTransaction();
+
+        AtomicalOperationBuilder.finalSafetyCheckForExcessiveFee(
+            psbt,
+            revealTx
+        );
+
+        const interTx = psbt.extractTransaction();
+        const rawtx = interTx.toHex();
+        console.log(chalk.green(`Refund ${psbt.txOutputs[0].value / 1e8} BTC from ${utxoOfCommitAddress.address} to ${psbt.txOutputs[0].address}`))
+
+       if (process.env.broadcast === 'true') {
+           console.log("\nBroadcasting tx...", revealTx.getId());
+           if (!(await this.broadcastWithRetries(rawtx))) {
+               console.log("Error sending", revealTx.getId(), rawtx);
+               throw new Error(
+                   "Unable to broadcast reveal transaction after attempts"
+               );
+           } else {
+               console.log("Success sent tx: ", revealTx.getId());
+           }
+       } else {
+           console.log(chalk.green('Refund tx hex:'))
+           console.log(chalk.green(rawtx))
+           console.log('Please use tools like sparrow to verify the tx hex')
+           console.log('Then broadcast it manually at https://mempool.space/tx/push ')
+       }
 
         const ret = {
             success: true,
             data: {
-                commitTxid,
-                revealTxid,
+                refundTxid: interTx.getId(),
             },
         };
-        if (
-            this.options.opType === "nft" ||
-            this.options.opType === "ft" ||
-            this.options.opType === "dft"
-        ) {
-            ret["data"]["atomicalId"] = atomicalId;
-        }
-        if (this.options.opType === "dat") {
-            ret["data"]["dataId"] = revealTxid + "i0";
-            ret["data"]["urn"] = "atom:btc:dat:" + revealTxid + "i0";
-        }
         return ret;
     }
 
@@ -1158,10 +1062,8 @@ export class AtomicalOperationBuilder {
                     // Reveal input
                     REVEAL_INPUT_BYTES_BASE +
                     (hashLockCompactSizeBytes + hashLockP2TROutputLen) / 4 +
-                    // Additional inputs
-                    this.inputUtxos.length * INPUT_BYTES_BASE +
                     // Outputs
-                    this.additionalOutputs.length * OUTPUT_BYTES_BASE)
+                    OUTPUT_BYTES_BASE)
         );
     }
 
