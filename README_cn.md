@@ -28,7 +28,7 @@
     - `time` 和 `nonce` 全部正确填写：立即完成（或者等待 reveal bitwork 完成）
     - 只正确填写 `time`：几小时到几天
     - 只正确填写 `nonce`：几秒钟到几分钟
-    - `time` 和 `nonce` 全部不填写：几乎不可能成功。推荐在 commit 交易的日志或者 https://www.blockchain.com/explorer/ 上查找'time'的值
+    - `time` 和 `nonce` 全部不填写：几乎不可能成功。推荐在 commit 交易的日志或者 https://www.blockchain.com/explorer/ 上查找`time`的值
     ``` yaml
     #################
     # 恢复配置

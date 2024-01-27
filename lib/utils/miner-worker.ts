@@ -50,6 +50,7 @@ interface WorkerInput {
     workerBitworkInfoCommit: BitworkInfo;
     iscriptP2TR: any;
     ihashLockP2TR: any;
+    workerId?: string;
 }
 
 // This is the worker's message event listener
@@ -71,11 +72,12 @@ if (parentPort) {
             workerBitworkInfoCommit,
             iscriptP2TR,
             ihashLockP2TR,
+            workerId,
         } = message;
 
         // Initialize worker-specific variables
-        let workerNonce = nonceStart;
-        let workerNoncesGenerated = nonceStart;
+        let workerNonce = nonceStart - 1;
+        let workerNoncesGenerated = 0;
         let workerPerformBitworkForCommitTx = performBitworkForCommitTx;
         let scriptP2TR = iscriptP2TR;
         let hashLockP2TR = ihashLockP2TR;
@@ -92,14 +94,15 @@ if (parentPort) {
         // Record current Unix time
         let unixtime = timeStart
         copiedData["args"]["time"] = unixtime;
+        let lastLogTime = 0;
 
         // Start mining loop, terminates when a valid proof of work is found or stopped manually
         do {
             // Introduce a minor delay to avoid overloading the CPU
-            await sleep(0); // Changed from 1 second for a non-blocking wait
+            // await sleep(0); // Changed from 1 second for a non-blocking wait // Removed, see https://github.com/atomicals/atomicals-js/pull/257
 
             // Set nonce and timestamp in the data to be committed
-            if (workerNonce > nonceEnd) {
+            if (workerNonce >= nonceEnd) {
                 unixtime -= timeDelta;
                 copiedData["args"]["time"] = unixtime;
                 workerNonce = nonceStart;
@@ -112,19 +115,22 @@ if (parentPort) {
             const atomPayload = new AtomicalsPayload(copiedData);
 
             // Prepare commit and reveal configurations
-            const updatedBaseCommit: { scriptP2TR; hashLockP2TR; hashscript } =
+            const updatedBaseCommit: { scriptP2TR } =
                 workerPrepareCommitRevealConfig(
                     workerOptions.opType,
                     fundingKeypair,
                     atomPayload
                 );
-
-            logMiningProgressToConsole(
-                workerPerformBitworkForCommitTx,
-                workerOptions.disableMiningChalk,
-                '',
-                workerNoncesGenerated
-            );
+            if (workerNoncesGenerated % 10000 === 0) {
+                const now = Date.now();
+                const speed = lastLogTime > 0 ? Math.round(10000 / (now - lastLogTime) * 1000) : '-';
+                lastLogTime = now;
+                const nonce = nonceStart === nonceEnd ? workerNonce : workerNonce.toString().padStart(7, ' ')
+                console.log(
+                    `${(new Date()).toLocaleString()}  Worker #${workerId}: ${workerNoncesGenerated} params checked, current nonce: ${nonce}, time: ${unixtime}, current worker speed: ${speed}`
+                );
+                await sleep(0);
+            }
             // Check if there is a valid proof of work
             if (updatedBaseCommit.scriptP2TR.address === revealAddress) {
                 // Valid proof of work found, log success message
@@ -152,26 +158,6 @@ if (parentPort) {
             finalBaseCommit,
         });
     });
-}
-
-function logMiningProgressToConsole(
-    dowork: boolean,
-    disableMiningChalk,
-    txid,
-    nonces
-) {
-    if (!dowork) {
-        return;
-    }
-    
-    if (nonces % 10000 === 0) {
-        console.log(
-            "Nonces: ",
-            nonces,
-            ", time: ",
-            Math.floor(Date.now() / 1000)
-        );
-    }
 }
 
 function getOutputValueForCommit(fees: FeeCalculations): number {
@@ -237,28 +223,14 @@ export const workerPrepareCommitRevealConfig = (
     const scriptTree = {
         output: hashscript,
     };
-    const hash_lock_script = hashscript;
-    const hashLockRedeem = {
-        output: hash_lock_script,
-        redeemVersion: 192,
-    };
     const buffer = Buffer.from(keypair.childNodeXOnlyPubkey);
     const scriptP2TR = payments.p2tr({
         internalPubkey: buffer,
         scriptTree,
         network: NETWORK,
     });
-
-    const hashLockP2TR = payments.p2tr({
-        internalPubkey: buffer,
-        scriptTree,
-        redeem: hashLockRedeem,
-        network: NETWORK,
-    });
     return {
         scriptP2TR,
-        hashLockP2TR,
-        hashscript,
     };
 };
 

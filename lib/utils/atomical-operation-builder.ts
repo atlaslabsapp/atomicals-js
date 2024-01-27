@@ -847,6 +847,7 @@ export class AtomicalOperationBuilder {
                     timeStartForWorker = timeStart;
                     timeDelta = 1;
                 }
+                const workerId = i.toString().padStart(Math.ceil(Math.log(concurrency - 1) / Math.log(10)) , '0');
 
                 // Send necessary data to the worker
                 const messageToWorker = {
@@ -864,6 +865,7 @@ export class AtomicalOperationBuilder {
                     workerBitworkInfoCommit,
                     scriptP2TR,
                     hashLockP2TR,
+                    workerId,
                 };
                 worker.postMessage(messageToWorker);
                 workers.push(worker);
